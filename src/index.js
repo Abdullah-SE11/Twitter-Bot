@@ -57,11 +57,14 @@ class HybridBot {
 
     async initBrowser() {
         logger.info('Launching browser...');
+        // Default to headless: false so the user can see/debug what's happening
+        const isHeadless = process.env.HEADLESS === 'true';
         this.browser = await puppeteer.launch({
-            headless: "new",
+            headless: isHeadless ? "new" : false,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
         this.page = await this.browser.newPage();
+        await this.page.setViewport({ width: 1280, height: 800 });
         await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
 
         if (fs.existsSync(COOKIES_PATH)) {
@@ -73,6 +76,7 @@ class HybridBot {
 
     async login() {
         try {
+            logger.info('Checking if already logged in...');
             await this.page.goto('https://twitter.com/home', { waitUntil: 'networkidle2' });
             if (this.page.url().includes('/home')) {
                 logger.info('Already logged into X.');
@@ -82,25 +86,28 @@ class HybridBot {
             logger.info('Performing fresh login...');
             await this.page.goto('https://twitter.com/i/flow/login', { waitUntil: 'networkidle2' });
 
+            logger.info('Entering username...');
             await this.page.waitForSelector('input[autocomplete="username"]', { timeout: 30000 });
             await this.page.type('input[autocomplete="username"]', process.env.TWITTER_USERNAME, { delay: 100 });
             await this.page.keyboard.press('Enter');
 
-            const passwordField = await this.page.waitForSelector('input[name="password"]', { timeout: 15000 }).catch(() => null);
+            logger.info('Waiting for password or verification step...');
+            // Wait for either the password input OR the challenge
+            await this.page.waitForSelector('input[name="password"], input[data-testid="ocfEnterTextTextInput"]', { timeout: 20000 });
 
-            if (!passwordField) {
+            const isVerification = await this.page.$('input[data-testid="ocfEnterTextTextInput"]');
+            if (isVerification) {
                 logger.info('Extra verification step detected (Email/Phone)...');
-                const verifyInput = await this.page.waitForSelector('input[data-testid="ocfEnterTextTextInput"]', { timeout: 10000 }).catch(() => null);
-                if (verifyInput) {
-                    await verifyInput.type(process.env.TWITTER_EMAIL, { delay: 100 });
-                    await this.page.keyboard.press('Enter');
-                    await this.page.waitForSelector('input[name="password"]', { timeout: 15000 });
-                }
+                await this.page.type('input[data-testid="ocfEnterTextTextInput"]', process.env.TWITTER_EMAIL || "", { delay: 100 });
+                await this.page.keyboard.press('Enter');
+                await this.page.waitForSelector('input[name="password"]', { timeout: 15000 });
             }
 
+            logger.info('Entering password...');
             await this.page.type('input[name="password"]', process.env.TWITTER_PASSWORD, { delay: 100 });
             await this.page.keyboard.press('Enter');
 
+            logger.info('Finalizing login...');
             await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
 
             if (this.page.url().includes('/home')) {
@@ -108,7 +115,7 @@ class HybridBot {
                 fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies));
                 logger.info('Login successful and cookies saved.');
             } else {
-                throw new Error('Login failed: Redirected to ' + this.page.url());
+                throw new Error('Login failed: Final URL is ' + this.page.url());
             }
         } catch (error) {
             await this.page.screenshot({ path: 'login_error.png' });
@@ -140,7 +147,6 @@ class HybridBot {
     async runCycle() {
         logger.info('--- Starting Hybrid Interaction Cycle ---');
         try {
-            // Pick a random keyword to keep it fresh
             const kw = CONFIG.keywords[Math.floor(Math.random() * CONFIG.keywords.length)];
             const tweetsFound = await this.getTweetIdsFromSearch(kw);
 
@@ -151,7 +157,6 @@ class HybridBot {
                 if (count >= CONFIG.likeLimit) break;
 
                 try {
-                    // Perform actions via API (Fast and Safe)
                     await rwClient.v2.like(this.userId, tweetObj.id);
                     logger.info(`API: Liked tweet ${tweetObj.id}`);
 
@@ -162,14 +167,13 @@ class HybridBot {
                     }
 
                     count++;
-                    await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
+                    await new Promise(r => setTimeout(r, 8000 + Math.random() * 5000));
                 } catch (e) {
                     if (e.code === 403) logger.warn("Already interacted or limit reached.");
                     else logger.error("API Action failed: " + e.message);
                 }
             }
 
-            // Also post a unique update
             const status = await this.generateTechUpdate();
             await rwClient.v2.tweet(status);
             logger.info(`API: Posted unique status: ${status}`);
@@ -196,24 +200,20 @@ class HybridBot {
 (async () => {
     const bot = new HybridBot();
     try {
-        // 1. Get User ID via API
         const me = await rwClient.v2.me();
         bot.userId = me.data.id;
         logger.info(`API linked to @${me.data.username}`);
 
-        // 2. Prepare Browser
         await bot.initBrowser();
         await bot.login();
 
-        // 3. Run Initial
         await bot.runCycle();
 
-        // 4. Schedule
         cron.schedule('0 * * * *', async () => {
             await bot.runCycle();
         });
 
-        logger.info('Hybrid bot is running. Browsing via Puppeteer, Acting via API. Schedule: Every 1 hour.');
+        logger.info('Hybrid bot is running. Browsing via Puppeteer (VISUAL MODE), Acting via API. Schedule: Every 1 hour.');
 
     } catch (e) {
         logger.error('Startup failed: ' + e.message);
