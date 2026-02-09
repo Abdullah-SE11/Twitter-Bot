@@ -93,12 +93,12 @@ async function postToTwitter() {
         // Initial post
         await postToTwitter();
 
-        // Schedule: Post every 2 hours (0 */2 * * *)
-        cron.schedule('0 */2 * * *', () => {
+        // Schedule: Post every 1 hour (0 * * * *)
+        cron.schedule('0 * * * *', () => {
             postToTwitter();
         });
 
-        logger.info('Bot scheduled. It will post unique tech content every 2 hours. Press Ctrl+C to stop.');
+        logger.info('Bot scheduled. It will post unique tech content every 1 hour. Press Ctrl+C to stop.');
 
     } catch (error) {
         logger.error('Authentication failed. Ensure your keys have READ/WRITE permissions: ' + error.message);
