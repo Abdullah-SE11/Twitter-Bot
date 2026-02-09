@@ -1,0 +1,20 @@
+{
+  "name": "twitter_bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "node-cron": "^4.2.1",
+    "twitter-api-v2": "^1.29.0",
+    "winston": "^3.19.0"
+  }
+}
