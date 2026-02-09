@@ -35,7 +35,8 @@ const rwClient = client.readWrite;
 
 // Configuration
 const CONFIG = {
-    keywords: (process.env.TARGET_KEYWORDS || 'tech,coding').split(','),
+    keywords: (process.env.TARGET_KEYWORDS || 'tech,coding,startups').split(','),
+    targetAccounts: (process.env.TARGET_ACCOUNTS || 'elonmusk,sama,ycombinator,techcrunch').split(','),
     likeLimit: parseInt(process.env.LIKE_LIMIT_PER_RUN || 5, 10),
     retweetProb: parseFloat(process.env.RETWEET_PROBABILITY || 0.2), // 20% chance
     replyProb: parseFloat(process.env.REPLY_PROBABILITY || 0.1), // 10% chance to reply
@@ -76,7 +77,30 @@ async function generateReply(tweetText) {
 async function runInteractions() {
     logger.info('Starting interaction cycle...');
     try {
-        // 1. Search for recent tweets
+        // 1. Target Specific Accounts (Influencers/Companies)
+        if (CONFIG.targetAccounts.length > 0) {
+            logger.info(`Checking target accounts: ${CONFIG.targetAccounts.join(', ')}`);
+            for (const handle of CONFIG.targetAccounts) {
+                try {
+                    const user = await rwClient.v2.userByUsername(handle.replace('@', ''));
+                    const timeline = await rwClient.v2.userTimeline(user.data.id, { max_results: 5 });
+
+                    for (const tweet of timeline.tweets) {
+                        // Reply if it's new and hasn't been replied to (simple probabilistic check)
+                        if (Math.random() < CONFIG.replyProb * 2) { // Higher chance for targeted accounts
+                            const replyText = await generateReply(tweet.text);
+                            await rwClient.v2.reply(replyText, tweet.id);
+                            logger.info(`Targeted Reply to @${handle}: ${replyText}`);
+                            await new Promise(r => setTimeout(r, 10000));
+                        }
+                    }
+                } catch (e) {
+                    logger.error(`Failed targeting account @${handle}: ${e.message}`);
+                }
+            }
+        }
+
+        // 2. Keyword Search Interactions
         // Note: Standard API v2 search (recent) has limitations.
         const query = CONFIG.keywords.join(' OR ') + ' -is:retweet -is:reply lang:en';
         logger.info(`Searching for: ${query}`);
@@ -116,12 +140,12 @@ async function runInteractions() {
                 if (Math.random() < CONFIG.replyProb) {
                     const replyText = await generateReply(tweet.text);
                     await rwClient.v2.reply(replyText, tweet.id);
-                    logger.info(`Replied to ${tweet.id}: ${replyText}`);
+                    logger.info(`Keyword Reply to ${tweet.id}: ${replyText}`);
                 }
 
                 actionsTaken++;
                 // Wait to avoid rate limits
-                await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // Be very slow for safety
+                await new Promise(r => setTimeout(r, 8000 + Math.random() * 5000)); // Be very slow for safety
 
             } catch (e) {
                 logger.error(`Failed interaction: ${e.message}`);
