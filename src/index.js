@@ -83,43 +83,36 @@ class HybridBot {
                 return;
             }
 
-            logger.info('Performing fresh login...');
+            logger.info('--- MANUAL LOGIN MODE ---');
+            logger.info('A browser window will now open.');
+            logger.info('1. Please MANUALLY log in to your Twitter account in the browser.');
+            logger.info('2. Once you reach the Twitter sidebar/home page, the bot will detect it.');
+            logger.info('Waiting for you to log in...');
+
             await this.page.goto('https://twitter.com/i/flow/login', { waitUntil: 'networkidle2' });
 
-            logger.info('Entering username...');
-            await this.page.waitForSelector('input[autocomplete="username"]', { timeout: 30000 });
-            await this.page.type('input[autocomplete="username"]', process.env.TWITTER_USERNAME, { delay: 100 });
-            await this.page.keyboard.press('Enter');
-
-            logger.info('Waiting for password or verification step...');
-            // Wait for either the password input OR the challenge
-            await this.page.waitForSelector('input[name="password"], input[data-testid="ocfEnterTextTextInput"]', { timeout: 20000 });
-
-            const isVerification = await this.page.$('input[data-testid="ocfEnterTextTextInput"]');
-            if (isVerification) {
-                logger.info('Extra verification step detected (Email/Phone)...');
-                await this.page.type('input[data-testid="ocfEnterTextTextInput"]', process.env.TWITTER_EMAIL || "", { delay: 100 });
-                await this.page.keyboard.press('Enter');
-                await this.page.waitForSelector('input[name="password"]', { timeout: 15000 });
+            // Check every 2 seconds if the user managed to log in
+            let loggedIn = false;
+            const maxWaitTime = 60 * 5; // 5 minutes max
+            for (let i = 0; i < maxWaitTime / 2; i++) {
+                if (this.page.url().includes('/home') || await this.page.$('[data-testid="SideNav_AccountSwitcher_Button"]')) {
+                    loggedIn = true;
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 2000));
             }
 
-            logger.info('Entering password...');
-            await this.page.type('input[name="password"]', process.env.TWITTER_PASSWORD, { delay: 100 });
-            await this.page.keyboard.press('Enter');
-
-            logger.info('Finalizing login...');
-            await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-
-            if (this.page.url().includes('/home')) {
+            if (loggedIn) {
+                logger.info('Login detected! Resuming bot actions...');
                 const cookies = await this.page.cookies();
                 fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies));
-                logger.info('Login successful and cookies saved.');
+                logger.info('Session saved to cookies.json.');
             } else {
-                throw new Error('Login failed: Final URL is ' + this.page.url());
+                throw new Error('Manual login timed out after 5 minutes.');
             }
         } catch (error) {
             await this.page.screenshot({ path: 'login_error.png' });
-            logger.error(`Login failed. Screenshot saved to login_error.png. Error: ${error.message}`);
+            logger.error(`Login failed: ${error.message}`);
             throw error;
         }
     }
