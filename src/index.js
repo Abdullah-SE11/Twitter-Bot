@@ -18,8 +18,7 @@ const logger = winston.createLogger({
     ]
 });
 
-// 2. Client Initialization
-// We need read/write access. Ensure your App permissions allow this in Developer Portal!
+// 2. Initializations
 const client = new TwitterApi({
     appKey: process.env.API_KEY,
     appSecret: process.env.API_SECRET,
@@ -30,175 +29,79 @@ const client = new TwitterApi({
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// Use the read-write client for actions
 const rwClient = client.readWrite;
 
-// Configuration
-const CONFIG = {
-    keywords: (process.env.TARGET_KEYWORDS || 'tech,coding,startups').split(','),
-    targetAccounts: (process.env.TARGET_ACCOUNTS || 'elonmusk,sama,ycombinator,techcrunch').split(','),
-    likeLimit: parseInt(process.env.LIKE_LIMIT_PER_RUN || 5, 10),
-    retweetProb: parseFloat(process.env.RETWEET_PROBABILITY || 0.2), // 20% chance
-    replyProb: parseFloat(process.env.REPLY_PROBABILITY || 0.1), // 10% chance to reply
-};
+const TECH_TOPICS = [
+    "Artificial Intelligence and its impact on future jobs",
+    "JavaScript and TypeScript development tips",
+    "Python for Data Science",
+    "Cloud Computing (AWS/Azure) best practices",
+    "Web3 and Blockchain innovation",
+    "Cybersecurity tips for small businesses",
+    "The future of SpaceX and space travel",
+    "Startup culture and entrepreneurship advice",
+    "Software engineering career growth",
+    "Quantum Computing explained simply"
+];
 
-async function checkExampleCredentials() {
-    if (!process.env.API_KEY || process.env.API_KEY === 'your_api_key') {
-        logger.error('CRITICAL: Twitter API keys not set.');
-        process.exit(1);
-    }
-    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'your_gemini_api_key') {
-        logger.error('CRITICAL: Gemini API key not set.');
-        process.exit(1);
-    }
-}
-
-async function generateReply(tweetText) {
+async function generateTechTweet() {
     try {
-        const prompt = `You are a helpful, engaging, and concise social media enthusiast. 
-    Write a short, natural-sounding reply to this tweet in 1-2 sentences. 
-    Avoid hashtags and keep it friendly. 
-    Tweet content: "${tweetText}"`;
+        const topic = TECH_TOPICS[Math.floor(Math.random() * TECH_TOPICS.length)];
+        logger.info(`Generating content for topic: ${topic}`);
+
+        const prompt = `You are a world-class tech influencer and software engineer. 
+    Write a short, engaging, and viral-worthy tweet about ${topic}. 
+    Include 1-2 relevant hashtags. Keep it under 240 characters. 
+    Make it sound human, insightful, and slightly provocative or helpful.`;
 
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        return response.text().trim();
+        return response.text().trim().replace(/["']/g, ""); // Remove quotes if AI adds them
     } catch (e) {
-        logger.error("AI Generation failed, using fallback: " + e.message);
-        const fallback = [
-            "Great point! Thanks for sharing.",
-            "Totally agree with this. 🚀",
-            "Interesting perspective!"
-        ];
-        return fallback[Math.floor(Math.random() * fallback.length)];
+        logger.error("AI Content Generation failed: " + e.message);
+        return null;
     }
 }
 
-async function runInteractions() {
-    logger.info('Starting interaction cycle...');
+async function postToTwitter() {
+    logger.info('Starting scheduled post cycle...');
     try {
-        // 1. Target Specific Accounts (Influencers/Companies)
-        if (CONFIG.targetAccounts.length > 0) {
-            logger.info(`Checking target accounts: ${CONFIG.targetAccounts.join(', ')}`);
-            for (const handle of CONFIG.targetAccounts) {
-                try {
-                    const user = await rwClient.v2.userByUsername(handle.replace('@', ''));
-                    const timeline = await rwClient.v2.userTimeline(user.data.id, { max_results: 5 });
+        const tweetContent = await generateTechTweet();
 
-                    for (const tweet of timeline.tweets) {
-                        // Reply if it's new and hasn't been replied to (simple probabilistic check)
-                        if (Math.random() < CONFIG.replyProb * 2) { // Higher chance for targeted accounts
-                            const replyText = await generateReply(tweet.text);
-                            await rwClient.v2.reply(replyText, tweet.id);
-                            logger.info(`Targeted Reply to @${handle}: ${replyText}`);
-                            await new Promise(r => setTimeout(r, 10000));
-                        }
-                    }
-                } catch (e) {
-                    logger.error(`Failed targeting account @${handle}: ${e.message}`);
-                }
-            }
-        }
-
-        // 2. Keyword Search Interactions
-        // Note: Standard API v2 search (recent) has limitations.
-        const query = CONFIG.keywords.join(' OR ') + ' -is:retweet -is:reply lang:en';
-        logger.info(`Searching for: ${query}`);
-
-        const searchResult = await rwClient.v2.search(query, {
-            'tweet.fields': ['created_at', 'author_id', 'text'],
-            max_results: 10,
-        });
-
-        const tweets = searchResult.tweets;
-        if (!tweets || tweets.length === 0) {
-            logger.info('No tweets found for keywords.');
+        if (!tweetContent) {
+            logger.warn('No content generated, skipping this cycle.');
             return;
         }
 
-        logger.info(`Found ${tweets.length} tweets.`);
-
-        let actionsTaken = 0;
-
-        for (const tweet of tweets) {
-            if (actionsTaken >= CONFIG.likeLimit) break;
-
-            try {
-                // 1. Like the tweet
-                logger.info(`Liking tweet ${tweet.id}...`);
-                await rwClient.v2.like(process.env.USER_ID, tweet.id); // Note: We need the authenticated user's ID
-                logger.info(`Liked tweet ${tweet.id}`);
-
-                // 2. Chance to Retweet
-                if (Math.random() < CONFIG.retweetProb) {
-                    logger.info(`Retweeting tweet ${tweet.id}...`);
-                    await rwClient.v2.retweet(process.env.USER_ID, tweet.id);
-                    logger.info(`Retweeted tweet ${tweet.id}`);
-                }
-
-                // 3. Chance to Reply (Comment)
-                if (Math.random() < CONFIG.replyProb) {
-                    const replyText = await generateReply(tweet.text);
-                    await rwClient.v2.reply(replyText, tweet.id);
-                    logger.info(`Keyword Reply to ${tweet.id}: ${replyText}`);
-                }
-
-                actionsTaken++;
-                // Wait to avoid rate limits
-                await new Promise(r => setTimeout(r, 8000 + Math.random() * 5000)); // Be very slow for safety
-
-            } catch (e) {
-                logger.error(`Failed interaction: ${e.message}`);
-            }
-        }
-
-        logger.info(`Cycle complete. Actions taken: ${actionsTaken}`);
+        logger.info(`Posting to X: "${tweetContent}"`);
+        await rwClient.v2.tweet(tweetContent);
+        logger.info('Tweet posted successfully!');
 
     } catch (error) {
-        logger.error('Error in interaction: ' + error.message);
-    }
-}
-
-async function postScheduledTweet() {
-    try {
-        const text = `Hello World! This is an automated post at ${new Date().toISOString()}. #bot #test`;
-        logger.info(`Posting tweet: "${text}"`);
-
-        await rwClient.v2.tweet(text);
-
-        logger.info('Tweet posted successfully via API.');
-    } catch (e) {
-        logger.error('Failed to post tweet: ' + e.message);
+        logger.error('Error posting to Twitter: ' + error.message);
     }
 }
 
 // 3. Main Entry
 (async () => {
-    await checkExampleCredentials();
-
     try {
-        // Determine the authenticated user's ID first (needed for Like/Retweet)
+        // Verify login
         const me = await rwClient.v2.me();
-        process.env.USER_ID = me.data.id;
         logger.info(`Logged in as @${me.data.username} (ID: ${me.data.id})`);
+        logger.info('Running in FREE TIER mode (Posting only).');
 
-        // Initial run
-        await runInteractions();
+        // Initial post
+        await postToTwitter();
 
-        // Schedule: Interactions every hour
-        cron.schedule('0 * * * *', () => {
-            runInteractions();
+        // Schedule: Post every 2 hours (0 */2 * * *)
+        cron.schedule('0 */2 * * *', () => {
+            postToTwitter();
         });
 
-        // Schedule: Post every 6 hours
-        cron.schedule('0 */6 * * *', () => {
-            postScheduledTweet();
-        });
-
-        logger.info('Bot scheduled and running. Press Ctrl+C to stop.');
+        logger.info('Bot scheduled. It will post unique tech content every 2 hours. Press Ctrl+C to stop.');
 
     } catch (error) {
-        logger.error('Authentication failed. Check your API keys: ' + error.message);
+        logger.error('Authentication failed. Ensure your keys have READ/WRITE permissions: ' + error.message);
         process.exit(1);
     }
 })();
