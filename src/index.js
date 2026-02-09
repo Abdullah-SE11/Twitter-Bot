@@ -34,6 +34,7 @@ const CONFIG = {
     keywords: (process.env.TARGET_KEYWORDS || 'tech,coding').split(','),
     likeLimit: parseInt(process.env.LIKE_LIMIT_PER_RUN || 5, 10),
     retweetProb: parseFloat(process.env.RETWEET_PROBABILITY || 0.2), // 20% chance
+    replyProb: parseFloat(process.env.REPLY_PROBABILITY || 0.1), // 10% chance to reply
 };
 
 async function checkExampleCredentials() {
@@ -41,6 +42,19 @@ async function checkExampleCredentials() {
         logger.error('CRITICAL: You are using default/empty credentials. Please edit your .env file with real Twitter API keys.');
         process.exit(1);
     }
+}
+
+async function generateReply(tweetText) {
+    // Placeholder for AI generation (e.g., Gemini/OpenAI)
+    // For now, we use a rotate of generic engaging phrases
+    const genericReplies = [
+        "Great point! Thanks for sharing.",
+        "I've been thinking about this too. Really interesting perspective.",
+        "This is super helpful, thanks!",
+        "Totally agree with this. 🚀",
+        "Interesting take on the situation."
+    ];
+    return genericReplies[Math.floor(Math.random() * genericReplies.length)];
 }
 
 async function runInteractions() {
@@ -52,7 +66,7 @@ async function runInteractions() {
         logger.info(`Searching for: ${query}`);
 
         const searchResult = await rwClient.v2.search(query, {
-            'tweet.fields': ['created_at', 'author_id'],
+            'tweet.fields': ['created_at', 'author_id', 'text'],
             max_results: 10,
         });
 
@@ -70,31 +84,38 @@ async function runInteractions() {
             if (actionsTaken >= CONFIG.likeLimit) break;
 
             try {
-                // Like the tweet
+                // 1. Like the tweet
                 logger.info(`Liking tweet ${tweet.id}...`);
                 await rwClient.v2.like(process.env.USER_ID, tweet.id); // Note: We need the authenticated user's ID
-                actionsTaken++;
                 logger.info(`Liked tweet ${tweet.id}`);
 
-                // Chance to Retweet
+                // 2. Chance to Retweet
                 if (Math.random() < CONFIG.retweetProb) {
                     logger.info(`Retweeting tweet ${tweet.id}...`);
                     await rwClient.v2.retweet(process.env.USER_ID, tweet.id);
                     logger.info(`Retweeted tweet ${tweet.id}`);
                 }
 
+                // 3. Chance to Reply (Comment)
+                if (Math.random() < CONFIG.replyProb) {
+                    const replyText = await generateReply(tweet.text);
+                    await rwClient.v2.reply(replyText, tweet.id);
+                    logger.info(`Replied to ${tweet.id}: ${replyText}`);
+                }
+
+                actionsTaken++;
                 // Wait to avoid rate limits
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // Be very slow for safety
 
             } catch (e) {
-                logger.error(`Failed to interact with tweet ${tweet.id}: ${e.message}`);
+                logger.error(`Failed interaction: ${e.message}`);
             }
         }
 
         logger.info(`Cycle complete. Actions taken: ${actionsTaken}`);
 
     } catch (error) {
-        logger.error('Error in interaction cycle: ' + error.message);
+        logger.error('Error in interaction: ' + error.message);
     }
 }
 
