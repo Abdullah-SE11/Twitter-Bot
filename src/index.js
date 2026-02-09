@@ -64,37 +64,49 @@ class HybridBot {
     }
 
     async login() {
-        await this.page.goto('https://twitter.com/home', { waitUntil: 'networkidle2' });
-        if (this.page.url().includes('/home')) {
-            logger.info('Already logged into X.');
-            return;
-        }
-
-        logger.info('Performing fresh login...');
-        await this.page.goto('https://twitter.com/i/flow/login');
-
-        await this.page.waitForSelector('input[autocomplete="username"]');
-        await this.page.type('input[autocomplete="username"]', process.env.TWITTER_USERNAME, { delay: 100 });
-        await this.page.keyboard.press('Enter');
-
         try {
-            const passwordField = await this.page.waitForSelector('input[name="password"]', { timeout: 5000 });
-            await passwordField.type(process.env.TWITTER_PASSWORD, { delay: 100 });
-            await this.page.keyboard.press('Enter');
-        } catch (e) {
-            // Might be email verification step
-            logger.info('Verification step detected...');
-            await this.page.type('input[data-testid="ocfEnterTextTextInput"]', process.env.TWITTER_EMAIL);
-            await this.page.keyboard.press('Enter');
-            await this.page.waitForSelector('input[name="password"]');
-            await this.page.type('input[name="password"]', process.env.TWITTER_PASSWORD);
-            await this.page.keyboard.press('Enter');
-        }
+            await this.page.goto('https://twitter.com/home', { waitUntil: 'networkidle2' });
+            if (this.page.url().includes('/home')) {
+                logger.info('Already logged into X.');
+                return;
+            }
 
-        await this.page.waitForNavigation({ waitUntil: 'networkidle2' });
-        const cookies = await this.page.cookies();
-        fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies));
-        logger.info('Login successful and cookies saved.');
+            logger.info('Performing fresh login...');
+            await this.page.goto('https://twitter.com/i/flow/login', { waitUntil: 'networkidle2' });
+
+            await this.page.waitForSelector('input[autocomplete="username"]', { timeout: 30000 });
+            await this.page.type('input[autocomplete="username"]', process.env.TWITTER_USERNAME, { delay: 100 });
+            await this.page.keyboard.press('Enter');
+
+            const passwordField = await this.page.waitForSelector('input[name="password"]', { timeout: 15000 }).catch(() => null);
+
+            if (!passwordField) {
+                logger.info('Extra verification step detected (Email/Phone)...');
+                const verifyInput = await this.page.waitForSelector('input[data-testid="ocfEnterTextTextInput"]', { timeout: 10000 }).catch(() => null);
+                if (verifyInput) {
+                    await verifyInput.type(process.env.TWITTER_EMAIL, { delay: 100 });
+                    await this.page.keyboard.press('Enter');
+                    await this.page.waitForSelector('input[name="password"]', { timeout: 15000 });
+                }
+            }
+
+            await this.page.type('input[name="password"]', process.env.TWITTER_PASSWORD, { delay: 100 });
+            await this.page.keyboard.press('Enter');
+
+            await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+
+            if (this.page.url().includes('/home')) {
+                const cookies = await this.page.cookies();
+                fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies));
+                logger.info('Login successful and cookies saved.');
+            } else {
+                throw new Error('Login failed: Redirected to ' + this.page.url());
+            }
+        } catch (error) {
+            await this.page.screenshot({ path: 'login_error.png' });
+            logger.error(`Login failed. Screenshot saved to login_error.png. Error: ${error.message}`);
+            throw error;
+        }
     }
 
     async getTweetIdsFromSearch(keyword) {
