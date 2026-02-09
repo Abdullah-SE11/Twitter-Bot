@@ -26,6 +26,9 @@ const client = new TwitterApi({
     accessSecret: process.env.ACCESS_SECRET,
 });
 
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
 // Use the read-write client for actions
 const rwClient = client.readWrite;
 
@@ -39,22 +42,34 @@ const CONFIG = {
 
 async function checkExampleCredentials() {
     if (!process.env.API_KEY || process.env.API_KEY === 'your_api_key') {
-        logger.error('CRITICAL: You are using default/empty credentials. Please edit your .env file with real Twitter API keys.');
+        logger.error('CRITICAL: Twitter API keys not set.');
+        process.exit(1);
+    }
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'your_gemini_api_key') {
+        logger.error('CRITICAL: Gemini API key not set.');
         process.exit(1);
     }
 }
 
 async function generateReply(tweetText) {
-    // Placeholder for AI generation (e.g., Gemini/OpenAI)
-    // For now, we use a rotate of generic engaging phrases
-    const genericReplies = [
-        "Great point! Thanks for sharing.",
-        "I've been thinking about this too. Really interesting perspective.",
-        "This is super helpful, thanks!",
-        "Totally agree with this. 🚀",
-        "Interesting take on the situation."
-    ];
-    return genericReplies[Math.floor(Math.random() * genericReplies.length)];
+    try {
+        const prompt = `You are a helpful, engaging, and concise social media enthusiast. 
+    Write a short, natural-sounding reply to this tweet in 1-2 sentences. 
+    Avoid hashtags and keep it friendly. 
+    Tweet content: "${tweetText}"`;
+
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return response.text().trim();
+    } catch (e) {
+        logger.error("AI Generation failed, using fallback: " + e.message);
+        const fallback = [
+            "Great point! Thanks for sharing.",
+            "Totally agree with this. 🚀",
+            "Interesting perspective!"
+        ];
+        return fallback[Math.floor(Math.random() * fallback.length)];
+    }
 }
 
 async function runInteractions() {

@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "dotenv": "^17.2.4",
     "node-cron": "^4.2.1",
     "twitter-api-v2": "^1.29.0",
