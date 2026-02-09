@@ -1,8 +1,10 @@
 require('dotenv').config();
 const { TwitterApi } = require('twitter-api-v2');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const puppeteer = require('puppeteer');
 const cron = require('node-cron');
 const winston = require('winston');
+const fs = require('fs');
 
 // 1. Configure Logger
 const logger = winston.createLogger({
@@ -28,80 +30,173 @@ const client = new TwitterApi({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
 const rwClient = client.readWrite;
 
-const TECH_TOPICS = [
-    "Artificial Intelligence and its impact on future jobs",
-    "JavaScript and TypeScript development tips",
-    "Python for Data Science",
-    "Cloud Computing (AWS/Azure) best practices",
-    "Web3 and Blockchain innovation",
-    "Cybersecurity tips for small businesses",
-    "The future of SpaceX and space travel",
-    "Startup culture and entrepreneurship advice",
-    "Software engineering career growth",
-    "Quantum Computing explained simply"
-];
+const COOKIES_PATH = 'cookies.json';
+const CONFIG = {
+    keywords: (process.env.TARGET_KEYWORDS || 'tech').split(',').map(k => k.trim()),
+    accounts: (process.env.TARGET_ACCOUNTS || '').split(',').map(a => a.trim()).filter(a => a),
+    likeLimit: 10,
+    replyProb: 0.2, // 20% chance to reply to a tweet we find
+};
 
-async function generateTechTweet() {
-    try {
-        const topic = TECH_TOPICS[Math.floor(Math.random() * TECH_TOPICS.length)];
-        logger.info(`Generating content for topic: ${topic}`);
-
-        const prompt = `You are a world-class tech influencer and software engineer. 
-    Write a short, engaging, and viral-worthy tweet about ${topic}. 
-    Include 1-2 relevant hashtags. Keep it under 240 characters. 
-    Make it sound human, insightful, and slightly provocative or helpful.`;
-
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        return response.text().trim().replace(/["']/g, ""); // Remove quotes if AI adds them
-    } catch (e) {
-        logger.error("AI Content Generation failed: " + e.message);
-        return null;
+class HybridBot {
+    constructor() {
+        this.browser = null;
+        this.page = null;
+        this.userId = null;
     }
-}
 
-async function postToTwitter() {
-    logger.info('Starting scheduled post cycle...');
-    try {
-        const tweetContent = await generateTechTweet();
+    async initBrowser() {
+        logger.info('Launching browser...');
+        this.browser = await puppeteer.launch({
+            headless: "new",
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        this.page = await this.browser.newPage();
+        await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
 
-        if (!tweetContent) {
-            logger.warn('No content generated, skipping this cycle.');
+        if (fs.existsSync(COOKIES_PATH)) {
+            const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH));
+            await this.page.setCookie(...cookies);
+            logger.info('Loaded cookies.');
+        }
+    }
+
+    async login() {
+        await this.page.goto('https://twitter.com/home', { waitUntil: 'networkidle2' });
+        if (this.page.url().includes('/home')) {
+            logger.info('Already logged into X.');
             return;
         }
 
-        logger.info(`Posting to X: "${tweetContent}"`);
-        await rwClient.v2.tweet(tweetContent);
-        logger.info('Tweet posted successfully!');
+        logger.info('Performing fresh login...');
+        await this.page.goto('https://twitter.com/i/flow/login');
 
-    } catch (error) {
-        logger.error('Error posting to Twitter: ' + error.message);
+        await this.page.waitForSelector('input[autocomplete="username"]');
+        await this.page.type('input[autocomplete="username"]', process.env.TWITTER_USERNAME, { delay: 100 });
+        await this.page.keyboard.press('Enter');
+
+        try {
+            const passwordField = await this.page.waitForSelector('input[name="password"]', { timeout: 5000 });
+            await passwordField.type(process.env.TWITTER_PASSWORD, { delay: 100 });
+            await this.page.keyboard.press('Enter');
+        } catch (e) {
+            // Might be email verification step
+            logger.info('Verification step detected...');
+            await this.page.type('input[data-testid="ocfEnterTextTextInput"]', process.env.TWITTER_EMAIL);
+            await this.page.keyboard.press('Enter');
+            await this.page.waitForSelector('input[name="password"]');
+            await this.page.type('input[name="password"]', process.env.TWITTER_PASSWORD);
+            await this.page.keyboard.press('Enter');
+        }
+
+        await this.page.waitForNavigation({ waitUntil: 'networkidle2' });
+        const cookies = await this.page.cookies();
+        fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies));
+        logger.info('Login successful and cookies saved.');
+    }
+
+    async getTweetIdsFromSearch(keyword) {
+        logger.info(`Searching for keyword: ${keyword}`);
+        const url = `https://twitter.com/search?q=${encodeURIComponent(keyword)}&f=live`;
+        await this.page.goto(url, { waitUntil: 'networkidle2' });
+        await this.page.waitForSelector('article[data-testid="tweet"]', { timeout: 10000 }).catch(() => null);
+
+        const ids = await this.page.evaluate(() => {
+            const tweets = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+            return tweets.map(t => {
+                const link = t.querySelector('a[href*="/status/"]');
+                if (link) {
+                    const parts = link.href.split('/');
+                    return { id: parts[parts.length - 1], text: t.innerText };
+                }
+                return null;
+            }).filter(t => t);
+        });
+        return ids;
+    }
+
+    async runCycle() {
+        logger.info('--- Starting Hybrid Interaction Cycle ---');
+        try {
+            // Pick a random keyword to keep it fresh
+            const kw = CONFIG.keywords[Math.floor(Math.random() * CONFIG.keywords.length)];
+            const tweetsFound = await this.getTweetIdsFromSearch(kw);
+
+            logger.info(`Found ${tweetsFound.length} potential tweets.`);
+            let count = 0;
+
+            for (const tweetObj of tweetsFound) {
+                if (count >= CONFIG.likeLimit) break;
+
+                try {
+                    // Perform actions via API (Fast and Safe)
+                    await rwClient.v2.like(this.userId, tweetObj.id);
+                    logger.info(`API: Liked tweet ${tweetObj.id}`);
+
+                    if (Math.random() < CONFIG.replyProb) {
+                        const reply = await this.generateReply(tweetObj.text);
+                        await rwClient.v2.reply(reply, tweetObj.id);
+                        logger.info(`API: Replied to ${tweetObj.id}`);
+                    }
+
+                    count++;
+                    await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
+                } catch (e) {
+                    if (e.code === 403) logger.warn("Already interacted or limit reached.");
+                    else logger.error("API Action failed: " + e.message);
+                }
+            }
+
+            // Also post a unique update
+            const status = await this.generateTechUpdate();
+            await rwClient.v2.tweet(status);
+            logger.info(`API: Posted unique status: ${status}`);
+
+        } catch (e) {
+            logger.error('Hybrid cycle error: ' + e.message);
+        }
+    }
+
+    async generateReply(text) {
+        const prompt = `Write a short, professional, and engaging 1-sentence reply to this tech tweet. Do not use hashtags. Text: "${text}"`;
+        const result = await model.generateContent(prompt);
+        return (await result.response).text().trim().replace(/["']/g, "");
+    }
+
+    async generateTechUpdate() {
+        const prompt = `Write a viral, insightful tech tweet (under 240 chars) about current trends in AI or Software Engineering. Use 1 hashtag.`;
+        const result = await model.generateContent(prompt);
+        return (await result.response).text().trim().replace(/["']/g, "");
     }
 }
 
-// 3. Main Entry
+// 3. Execution
 (async () => {
+    const bot = new HybridBot();
     try {
-        // Verify login
+        // 1. Get User ID via API
         const me = await rwClient.v2.me();
-        logger.info(`Logged in as @${me.data.username} (ID: ${me.data.id})`);
-        logger.info('Running in FREE TIER mode (Posting only).');
+        bot.userId = me.data.id;
+        logger.info(`API linked to @${me.data.username}`);
 
-        // Initial post
-        await postToTwitter();
+        // 2. Prepare Browser
+        await bot.initBrowser();
+        await bot.login();
 
-        // Schedule: Post every 1 hour (0 * * * *)
-        cron.schedule('0 * * * *', () => {
-            postToTwitter();
+        // 3. Run Initial
+        await bot.runCycle();
+
+        // 4. Schedule
+        cron.schedule('0 * * * *', async () => {
+            await bot.runCycle();
         });
 
-        logger.info('Bot scheduled. It will post unique tech content every 1 hour. Press Ctrl+C to stop.');
+        logger.info('Hybrid bot is running. Browsing via Puppeteer, Acting via API. Schedule: Every 1 hour.');
 
-    } catch (error) {
-        logger.error('Authentication failed. Ensure your keys have READ/WRITE permissions: ' + error.message);
+    } catch (e) {
+        logger.error('Startup failed: ' + e.message);
         process.exit(1);
     }
 })();
