@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { TwitterApi } = require('twitter-api-v2');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const cron = require('node-cron');
 const winston = require('winston');
 
