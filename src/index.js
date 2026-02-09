@@ -21,6 +21,14 @@ const logger = winston.createLogger({
 });
 
 // 2. Initializations
+const requiredEnv = ['API_KEY', 'API_SECRET', 'ACCESS_TOKEN', 'ACCESS_SECRET', 'GEMINI_API_KEY', 'TWITTER_USERNAME', 'TWITTER_PASSWORD'];
+for (const env of requiredEnv) {
+    if (!process.env[env]) {
+        logger.error(`CRITICAL: ${env} is missing from .env file.`);
+        process.exit(1);
+    }
+}
+
 const client = new TwitterApi({
     appKey: process.env.API_KEY,
     appSecret: process.env.API_SECRET,
